@@ -1,0 +1,2003 @@
+local Players = game:GetService("Players")
+local Teams = game:GetService("Teams")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Lighting = game:GetService("Lighting")
+local Workspace = workspace
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local function detectMobilePlatform()
+	local cam = Workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(854, 480)
+	local hasTouch = UserInputService.TouchEnabled
+	local hasAccel = UserInputService.AccelerometerEnabled
+	local hasGyro = UserInputService.GyroscopeEnabled
+	local noPhysicalKeyboard = not UserInputService.KeyboardEnabled
+	local isSmallTouchScreen = hasTouch and (math.max(vp.X, vp.Y) <= 1366)
+	return (hasTouch and (noPhysicalKeyboard or hasAccel or hasGyro or isSmallTouchScreen))
+end
+
+local isMobileTouch = detectMobilePlatform()
+
+for _, guiName in ipairs({"CustomMenuUI", "SkinChangerSubUI", "SkinConfirmModal", "ESPColorPickerUI", "RadarHackUI", "StatsHudUI"}) do
+	if playerGui:FindFirstChild(guiName) then
+		playerGui[guiName]:Destroy()
+	end
+end
+
+local originalLighting = {
+	ClockTime = Lighting.ClockTime,
+	Brightness = Lighting.Brightness,
+	GlobalShadows = Lighting.GlobalShadows,
+	Ambient = Lighting.Ambient,
+	OutdoorAmbient = Lighting.OutdoorAmbient,
+	FogEnd = Lighting.FogEnd,
+	FogStart = Lighting.FogStart
+}
+
+local originalCameraBounds = {
+	MinZoom = player.CameraMinZoomDistance,
+	MaxZoom = player.CameraMaxZoomDistance
+}
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CustomMenuUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+local state = {
+	teamCheck = false,
+	esp2D = false,
+	healthBar = false,
+	tracers = false,
+	skeleton = false,
+	esp3D = false,
+	showDistance = false,
+	showName = false,
+	headDotEsp = false,
+	boxFillEsp = false,
+	healthTextEsp = false,
+	espShowToolName = false,
+	lookingAtMeEsp = false,
+	tracerTopMode = false,
+	tracerCenterMode = false,
+	skeletonThick = false,
+	chamsPulse = false,
+	rainbowEsp = false,
+	espMaxDistFilter = false,
+	espOnlyVisible = false,
+	espHideDead = true,
+	espRadarSyncColor = false,
+
+	radarEnabled = false,
+	radarDraggable = true,
+	radarRange = 140,
+	hue = 0.38,
+	radarRotateWithCam = false,
+	radarShowDistRing = false,
+	radarBlipSizeBoost = false,
+	radarCompactMode = false,
+
+	aimTeamCheck = false,
+	fastHeadKillMode = false,
+	sightHeadShoot = false,
+	spinHack = false,
+	spinSpeed = 68,
+	spinReverseDir = false,
+	spinWobblePitch = false,
+	spinOnlyWhenMoving = false,
+	aimbot = false,
+	aimHead = true,
+	showFov = false,
+	fovRadius = 150,
+	aimSmooth = 0.85,
+	triggerBot = false,
+	rapidFireClick = false,
+	aimPredictMove = false,
+	aimStickTarget = false,
+	aimLowestHp = false,
+	aimNearestWorld = false,
+	autoEquipTool = false,
+	autoFireWhenAimed = false,
+	aimFovRainbow = false,
+	aimSnapBoost = false,
+
+	savedSkin = nil,
+	thirdPersonHack = false,
+	thirdPersonDist = 11,
+	darkOverlay = false,
+	crosshairDot = false,
+	fpsHud = false,
+	posHud = false,
+	camFovBoost = false,
+	noFog = false,
+	fullBright = false,
+	crosshairPlus = false,
+	crosshairDynamic = false,
+	pingHud = false,
+	enemyCountHud = false,
+	spinStatusHud = false,
+	removeShadows = false,
+	brightAmbientSoft = false,
+	nightVisionTint = false,
+	warmVisionTint = false,
+	thirdPersonPeek = false,
+	screenFlashAlert = false,
+
+	godMode = false,
+	speedBoost = false,
+	jumpBoost = false,
+	infJump = false,
+	noClip = false,
+	airFloat = false,
+	autoJumpMove = false,
+	antiAfk = false,
+	highGravityToggle = false,
+	lowGravityToggle = false,
+	fastRespawnState = false,
+	autoSprintWalk = false,
+	safePlatformLock = false,
+	autoFaceNearestEnemy = false,
+	orbitNearestEnemy = false
+}
+
+local hasActiveSightTarget = false
+local spinAngleAccum = 0
+local spinDirSign = 1
+local currentLockedTarget = nil
+local lastShotTick = 0
+local lastDashTick = 0
+local lastAfkTick = os.clock()
+local rainbowHue = 0
+
+local function getEspColor()
+	if state.rainbowEsp then
+		return Color3.fromHSV(rainbowHue, 0.9, 1)
+	end
+	return Color3.fromHSV(state.hue, 0.9, 1)
+end
+
+local function isSameTeam(plr)
+	if not plr or plr == player then return false end
+	if player.Team and plr.Team then
+		return player.Team == plr.Team
+	end
+	if player.TeamColor and plr.TeamColor and player.TeamColor ~= BrickColor.White() then
+		if player.TeamColor == plr.TeamColor then
+			return true
+		end
+	end
+	local myAttrTeam = player:GetAttribute("Team") or player:GetAttribute("TeamName") or player:GetAttribute("Faction")
+	local theirAttrTeam = plr:GetAttribute("Team") or plr:GetAttribute("TeamName") or plr:GetAttribute("Faction")
+	if myAttrTeam ~= nil and theirAttrTeam ~= nil and tostring(myAttrTeam) == tostring(theirAttrTeam) then
+		return true
+	end
+	local myChar = player.Character
+	local theirChar = plr.Character
+	if myChar and theirChar then
+		local myHl = myChar:FindFirstChildOfClass("Highlight")
+		local theirHl = theirChar:FindFirstChildOfClass("Highlight")
+		if myHl and theirHl and myHl.FillColor == theirHl.FillColor then
+			return true
+		end
+	end
+	if #Teams:GetTeams() > 0 then
+		for _, tm in ipairs(Teams:GetTeams()) do
+			if tm == player.Team and tm == plr.Team then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function isEnemyForEsp(plr)
+	if not plr or plr == player then return false end
+	if state.teamCheck and isSameTeam(plr) then
+		return false
+	end
+	return true
+end
+
+local function isEnemyForAim(plr)
+	if not plr or plr == player then return false end
+	if state.aimTeamCheck and isSameTeam(plr) then
+		return false
+	end
+	return true
+end
+
+local function applyThirdPersonHack()
+	if state.thirdPersonHack then
+		player.CameraMinZoomDistance = math.max(state.thirdPersonDist, 6)
+		player.CameraMaxZoomDistance = math.max(state.thirdPersonDist + 8, 14)
+		local cam = Workspace.CurrentCamera
+		if cam then
+			cam.CameraType = Enum.CameraType.Custom
+		end
+	else
+		player.CameraMinZoomDistance = originalCameraBounds.MinZoom
+		player.CameraMaxZoomDistance = originalCameraBounds.MaxZoom
+	end
+end
+
+local function applyLightingState()
+	if state.noFog then
+		Lighting.FogEnd = 1e6
+		Lighting.FogStart = 1e6
+	else
+		Lighting.FogEnd = originalLighting.FogEnd
+		Lighting.FogStart = originalLighting.FogStart
+	end
+
+	if state.removeShadows then
+		Lighting.GlobalShadows = false
+	end
+
+	if state.fullBright then
+		Lighting.ClockTime = 14
+		Lighting.Brightness = 2.5
+		Lighting.GlobalShadows = false
+		Lighting.Ambient = Color3.fromRGB(185, 185, 185)
+		Lighting.OutdoorAmbient = Color3.fromRGB(185, 185, 185)
+	elseif state.brightAmbientSoft then
+		Lighting.Brightness = 1.8
+		Lighting.Ambient = Color3.fromRGB(130, 130, 130)
+		Lighting.OutdoorAmbient = Color3.fromRGB(130, 130, 130)
+	elseif state.nightVisionTint then
+		Lighting.Ambient = Color3.fromRGB(40, 170, 75)
+		Lighting.OutdoorAmbient = Color3.fromRGB(40, 170, 75)
+	elseif state.warmVisionTint then
+		Lighting.Ambient = Color3.fromRGB(175, 125, 65)
+		Lighting.OutdoorAmbient = Color3.fromRGB(175, 125, 65)
+	else
+		Lighting.ClockTime = originalLighting.ClockTime
+		Lighting.Brightness = originalLighting.Brightness
+		Lighting.GlobalShadows = originalLighting.GlobalShadows
+		Lighting.Ambient = originalLighting.Ambient
+		Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+	end
+
+	if state.lowGravityToggle then
+		Workspace.Gravity = 75
+	elseif state.highGravityToggle then
+		Workspace.Gravity = 320
+	else
+		Workspace.Gravity = 196.2
+	end
+end
+
+local espFolder = Instance.new("Folder")
+espFolder.Name = "ESP2DFolder"
+espFolder.Parent = screenGui
+
+local tracerFolder = Instance.new("Folder")
+tracerFolder.Name = "TracerFolder"
+tracerFolder.Parent = screenGui
+
+local skeletonFolder = Instance.new("Folder")
+skeletonFolder.Name = "SkeletonFolder"
+skeletonFolder.Parent = screenGui
+
+local highlightFolder = Instance.new("Folder")
+highlightFolder.Name = "Highlight3DFolder"
+highlightFolder.Parent = screenGui
+
+local darkShade = Instance.new("Frame")
+darkShade.Size = UDim2.new(1, 0, 1, 0)
+darkShade.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+darkShade.BackgroundTransparency = 0.45
+darkShade.BorderSizePixel = 0
+darkShade.Visible = false
+darkShade.ZIndex = 1
+darkShade.Parent = screenGui
+
+local alertFlash = Instance.new("Frame")
+alertFlash.Size = UDim2.new(1, 0, 1, 0)
+alertFlash.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+alertFlash.BackgroundTransparency = 0.85
+alertFlash.BorderSizePixel = 0
+alertFlash.Visible = false
+alertFlash.ZIndex = 1
+alertFlash.Parent = screenGui
+
+local crosshair = Instance.new("Frame")
+crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
+crosshair.Size = UDim2.new(0, 5, 0, 5)
+crosshair.Position = UDim2.new(0.5, 0, 0.5, 0)
+crosshair.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+crosshair.BorderSizePixel = 0
+crosshair.Visible = false
+crosshair.Parent = screenGui
+Instance.new("UICorner", crosshair).CornerRadius = UDim.new(1, 0)
+
+local chLineH = Instance.new("Frame")
+chLineH.AnchorPoint = Vector2.new(0.5, 0.5)
+chLineH.Size = UDim2.new(0, 16, 0, 2)
+chLineH.Position = UDim2.new(0.5, 0, 0.5, 0)
+chLineH.BackgroundColor3 = Color3.fromRGB(90, 255, 140)
+chLineH.BorderSizePixel = 0
+chLineH.Visible = false
+chLineH.Parent = screenGui
+
+local chLineV = Instance.new("Frame")
+chLineV.AnchorPoint = Vector2.new(0.5, 0.5)
+chLineV.Size = UDim2.new(0, 2, 0, 16)
+chLineV.Position = UDim2.new(0.5, 0, 0.5, 0)
+chLineV.BackgroundColor3 = Color3.fromRGB(90, 255, 140)
+chLineV.BorderSizePixel = 0
+chLineV.Visible = false
+chLineV.Parent = screenGui
+
+local fovCircle = Instance.new("Frame")
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
+fovCircle.Size = UDim2.new(0, state.fovRadius * 2, 0, state.fovRadius * 2)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Visible = false
+fovCircle.Parent = screenGui
+Instance.new("UICorner", fovCircle).CornerRadius = UDim.new(1, 0)
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Color = Color3.fromRGB(255, 255, 255)
+fovStroke.Thickness = 1.4
+fovStroke.Parent = fovCircle
+
+local hudGui = Instance.new("ScreenGui")
+hudGui.Name = "StatsHudUI"
+hudGui.ResetOnSpawn = false
+hudGui.Parent = playerGui
+
+local hudLabel = Instance.new("TextLabel")
+hudLabel.Size = UDim2.new(0, 230, 0, 34)
+hudLabel.Position = UDim2.new(0, 12, 0, 10)
+hudLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 26)
+hudLabel.BackgroundTransparency = 0.25
+hudLabel.TextColor3 = Color3.fromRGB(130, 255, 180)
+hudLabel.Font = Enum.Font.Code
+hudLabel.TextSize = 10
+hudLabel.TextXAlignment = Enum.TextXAlignment.Left
+hudLabel.TextYAlignment = Enum.TextYAlignment.Center
+hudLabel.Text = ""
+hudLabel.Visible = false
+hudLabel.Parent = hudGui
+Instance.new("UICorner", hudLabel).CornerRadius = UDim.new(0, 6)
+
+local function makeDraggable(handle, target, checkEnabledFn)
+	local dragging = false
+	local dragStart, startPos
+
+	handle.InputBegan:Connect(function(input)
+		if checkEnabledFn and not checkEnabledFn() then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = target.Position
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			target.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+local radarGui = Instance.new("ScreenGui")
+radarGui.Name = "RadarHackUI"
+radarGui.ResetOnSpawn = false
+radarGui.Parent = playerGui
+
+local radarFrame = Instance.new("Frame")
+radarFrame.Name = "RadarBox"
+radarFrame.Size = UDim2.new(0, 112, 0, 112)
+radarFrame.Position = UDim2.new(0, 14, 0, 56)
+radarFrame.BackgroundColor3 = Color3.fromRGB(18, 22, 28)
+radarFrame.BackgroundTransparency = 0.25
+radarFrame.BorderSizePixel = 0
+radarFrame.Visible = false
+radarFrame.Parent = radarGui
+Instance.new("UICorner", radarFrame).CornerRadius = UDim.new(1, 0)
+
+local radarStroke = Instance.new("UIStroke")
+radarStroke.Color = Color3.fromRGB(70, 210, 255)
+radarStroke.Thickness = 1.4
+radarStroke.Parent = radarFrame
+
+local radarRing = Instance.new("Frame")
+radarRing.AnchorPoint = Vector2.new(0.5, 0.5)
+radarRing.Size = UDim2.new(0.55, 0, 0.55, 0)
+radarRing.Position = UDim2.new(0.5, 0, 0.5, 0)
+radarRing.BackgroundTransparency = 1
+radarRing.Parent = radarFrame
+Instance.new("UICorner", radarRing).CornerRadius = UDim.new(1, 0)
+local rrStroke = Instance.new("UIStroke")
+rrStroke.Color = Color3.fromRGB(70, 210, 255)
+rrStroke.Transparency = 0.65
+rrStroke.Thickness = 1
+rrStroke.Parent = radarRing
+
+local radarCenterDot = Instance.new("Frame")
+radarCenterDot.AnchorPoint = Vector2.new(0.5, 0.5)
+radarCenterDot.Size = UDim2.new(0, 6, 0, 6)
+radarCenterDot.Position = UDim2.new(0.5, 0, 0.5, 0)
+radarCenterDot.BackgroundColor3 = Color3.fromRGB(80, 255, 140)
+radarCenterDot.BorderSizePixel = 0
+radarCenterDot.Parent = radarFrame
+Instance.new("UICorner", radarCenterDot).CornerRadius = UDim.new(1, 0)
+
+makeDraggable(radarFrame, radarFrame, function()
+	return state.radarDraggable
+end)
+
+local radarBlips = {}
+local function getRadarBlip(plr)
+	if radarBlips[plr] then return radarBlips[plr] end
+	local dot = Instance.new("Frame")
+	dot.AnchorPoint = Vector2.new(0.5, 0.5)
+	dot.Size = UDim2.new(0, 6, 0, 6)
+	dot.BackgroundColor3 = Color3.fromRGB(255, 75, 75)
+	dot.BorderSizePixel = 0
+	dot.Visible = false
+	dot.Parent = radarFrame
+	Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+	radarBlips[plr] = dot
+	return dot
+end
+
+local function isPartVisible(cam, targetPos, ignoreChar)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local filterList = {}
+	if player.Character then table.insert(filterList, player.Character) end
+	if ignoreChar then table.insert(filterList, ignoreChar) end
+	params.FilterDescendantsInstances = filterList
+	local dir = targetPos - cam.CFrame.Position
+	local hit = Workspace:Raycast(cam.CFrame.Position, dir, params)
+	return hit == nil
+end
+
+local function createLine(parent, color, thickness)
+	local f = Instance.new("Frame")
+	f.AnchorPoint = Vector2.new(0.5, 0.5)
+	f.BackgroundColor3 = color or Color3.fromRGB(0, 255, 120)
+	f.BorderSizePixel = 0
+	f.Visible = false
+	f.Size = UDim2.new(0, 0, 0, thickness or 1.5)
+	f.Parent = parent
+	return f
+end
+
+local function updateLine(f, p1, p2, thickness, color)
+	local t = thickness or 1.5
+	local dx = p2.X - p1.X
+	local dy = p2.Y - p1.Y
+	local dist = math.sqrt(dx * dx + dy * dy)
+	if dist < 1 then
+		f.Visible = false
+		return
+	end
+	if color then f.BackgroundColor3 = color end
+	f.Size = UDim2.new(0, dist, 0, t)
+	f.Position = UDim2.new(0, (p1.X + p2.X) * 0.5, 0, (p1.Y + p2.Y) * 0.5)
+	f.Rotation = math.deg(math.atan2(dy, dx))
+	f.Visible = true
+end
+
+local visuals = {}
+local BONE_PAIRS_R15 = {
+	{"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
+	{"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"}, {"LeftLowerArm", "LeftHand"},
+	{"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"}, {"RightLowerArm", "RightHand"},
+	{"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"}, {"LeftLowerLeg", "LeftFoot"},
+	{"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"}, {"RightLowerLeg", "RightFoot"},
+}
+local BONE_PAIRS_R6 = {
+	{"Head", "Torso"}, {"Torso", "Left Arm"}, {"Torso", "Right Arm"}, {"Torso", "Left Leg"}, {"Torso", "Right Leg"},
+}
+
+local function getVisual(plr)
+	if visuals[plr] then return visuals[plr] end
+
+	local box = Instance.new("Frame")
+	box.BackgroundColor3 = Color3.fromRGB(0, 255, 120)
+	box.BackgroundTransparency = 1
+	box.BorderSizePixel = 0
+	box.Visible = false
+	box.Parent = espFolder
+
+	local boxStroke = Instance.new("UIStroke")
+	boxStroke.Color = Color3.fromRGB(0, 255, 120)
+	boxStroke.Thickness = 1.3
+	boxStroke.Parent = box
+
+	local hpBg = Instance.new("Frame")
+	hpBg.Size = UDim2.new(0, 4, 1, 0)
+	hpBg.Position = UDim2.new(1, 2, 0, 0)
+	hpBg.BackgroundColor3 = Color3.fromRGB(210, 45, 45)
+	hpBg.BorderSizePixel = 0
+	hpBg.Parent = box
+
+	local hpFill = Instance.new("Frame")
+	hpFill.AnchorPoint = Vector2.new(0, 1)
+	hpFill.Size = UDim2.new(1, 0, 1, 0)
+	hpFill.Position = UDim2.new(0, 0, 1, 0)
+	hpFill.BackgroundColor3 = Color3.fromRGB(0, 255, 95)
+	hpFill.BorderSizePixel = 0
+	hpFill.Parent = hpBg
+
+	local tag = Instance.new("TextLabel")
+	tag.Size = UDim2.new(0, 150, 0, 14)
+	tag.Position = UDim2.new(0.5, -75, 0, -16)
+	tag.BackgroundTransparency = 1
+	tag.TextColor3 = Color3.fromRGB(255, 255, 255)
+	tag.TextStrokeTransparency = 0.25
+	tag.Font = Enum.Font.GothamBold
+	tag.TextSize = 10
+	tag.Parent = box
+
+	local tracer = createLine(tracerFolder, Color3.fromRGB(0, 255, 120), 1.2)
+
+	local headCircle = Instance.new("Frame")
+	headCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+	headCircle.BackgroundTransparency = 1
+	headCircle.BorderSizePixel = 0
+	headCircle.Visible = false
+	headCircle.Parent = skeletonFolder
+	Instance.new("UICorner", headCircle).CornerRadius = UDim.new(1, 0)
+	local hs = Instance.new("UIStroke")
+	hs.Color = Color3.fromRGB(255, 255, 255)
+	hs.Thickness = 1.1
+	hs.Parent = headCircle
+
+	local bones = {}
+	for i = 1, 14 do
+		bones[i] = createLine(skeletonFolder, Color3.fromRGB(255, 255, 255), 1.3)
+	end
+
+	local hl = Instance.new("Highlight")
+	hl.FillColor = Color3.fromRGB(255, 85, 85)
+	hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+	hl.FillTransparency = 0.55
+	hl.OutlineTransparency = 0.1
+	hl.Enabled = false
+	hl.Parent = highlightFolder
+
+	visuals[plr] = {
+		box = box, boxStroke = boxStroke, hpBg = hpBg, hpFill = hpFill,
+		tag = tag, tracer = tracer, headCircle = headCircle, headStroke = hs,
+		bones = bones, hl = hl
+	}
+	return visuals[plr]
+end
+
+local function hideVisual(v)
+	v.box.Visible = false
+	v.tracer.Visible = false
+	v.headCircle.Visible = false
+	v.hl.Enabled = false
+	for _, b in ipairs(v.bones) do
+		b.Visible = false
+	end
+end
+
+Players.PlayerRemoving:Connect(function(plr)
+	if visuals[plr] then
+		visuals[plr].box:Destroy()
+		visuals[plr].tracer:Destroy()
+		visuals[plr].headCircle:Destroy()
+		visuals[plr].hl:Destroy()
+		for _, b in ipairs(visuals[plr].bones) do b:Destroy() end
+		visuals[plr] = nil
+	end
+	if radarBlips[plr] then
+		radarBlips[plr]:Destroy()
+		radarBlips[plr] = nil
+	end
+end)
+
+local function getPredictedPos(part, hrp)
+	if not part then return Vector3.zero end
+	if state.aimPredictMove and hrp then
+		return part.Position + (hrp.AssemblyLinearVelocity * 0.08)
+	end
+	return part.Position
+end
+
+local function getBestAimTarget()
+	local cam = Workspace.CurrentCamera
+	if not cam then return nil end
+	local center = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
+	local bestPart = nil
+	local bestScore = math.huge
+
+	if state.aimStickTarget and currentLockedTarget and currentLockedTarget.Parent then
+		local ownerPlr = Players:GetPlayerFromCharacter(currentLockedTarget.Parent)
+		if ownerPlr and not isEnemyForAim(ownerPlr) then
+			currentLockedTarget = nil
+		else
+			local hum = currentLockedTarget.Parent:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 then
+				local vp, onScreen = cam:WorldToViewportPoint(currentLockedTarget.Position)
+				if onScreen and vp.Z > 0 then
+					local d = (Vector2.new(vp.X, vp.Y) - center).Magnitude
+					if d <= state.fovRadius * 1.35 then
+						return currentLockedTarget
+					end
+				end
+			end
+			currentLockedTarget = nil
+		end
+	end
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if isEnemyForAim(plr) and plr.Character then
+			local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+			local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+			local part = state.aimHead
+				and (plr.Character:FindFirstChild("Head") or hrp)
+				or (hrp or plr.Character:FindFirstChild("Head"))
+			if hum and hum.Health > 0 and part then
+				local vp, onScreen = cam:WorldToViewportPoint(part.Position)
+				if onScreen and vp.Z > 0 then
+					local d = (Vector2.new(vp.X, vp.Y) - center).Magnitude
+					if d <= state.fovRadius then
+						local score = d
+						if state.aimLowestHp then
+							score = hum.Health + d * 0.3
+						elseif state.aimNearestWorld and hrp and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+							score = (hrp.Position - player.Character.HumanoidRootPart.Position).Magnitude
+						end
+						if score < bestScore then
+							bestScore = score
+							bestPart = part
+						end
+					end
+				end
+			end
+		end
+	end
+
+	currentLockedTarget = bestPart
+	return bestPart
+end
+
+local function getNearestHeadInScreenSight()
+	local cam = Workspace.CurrentCamera
+	local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not cam or not myRoot then return nil end
+
+	local vp = cam.ViewportSize
+	local bestHead = nil
+	local bestWorldDist = math.huge
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if isEnemyForAim(plr) and plr.Character then
+			local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+			local head = plr.Character:FindFirstChild("Head")
+			if hum and hum.Health > 0 and head then
+				local screenPos, onScreen = cam:WorldToViewportPoint(head.Position)
+				if onScreen and screenPos.Z > 0 and screenPos.X >= 0 and screenPos.X <= vp.X and screenPos.Y >= 0 and screenPos.Y <= vp.Y then
+					local worldDist = (head.Position - myRoot.Position).Magnitude
+					if worldDist < bestWorldDist then
+						bestWorldDist = worldDist
+						bestHead = head
+					end
+				end
+			end
+		end
+	end
+	return bestHead
+end
+
+local function equipFirstToolIfNeeded()
+	if not state.autoEquipTool then return end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if char and hum and not char:FindFirstChildOfClass("Tool") then
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		if backpack then
+			local tool = backpack:FindFirstChildOfClass("Tool")
+			if tool then
+				pcall(function()
+					hum:EquipTool(tool)
+				end)
+			end
+		end
+	end
+end
+
+local function triggerFireAction()
+	local minInterval = (state.fastHeadKillMode or state.rapidFireClick) and 0.025 or 0.065
+	local now = os.clock()
+	if now - lastShotTick < minInterval then return end
+	lastShotTick = now
+
+	equipFirstToolIfNeeded()
+
+	local char = player.Character
+	if char then
+		local tool = char:FindFirstChildOfClass("Tool")
+		if tool and typeof(tool.Activate) == "function" then
+			pcall(function()
+				tool:Activate()
+			end)
+		end
+	end
+
+	if not isMobileTouch then
+		pcall(function()
+			local cam = Workspace.CurrentCamera
+			local cx = cam and (cam.ViewportSize.X * 0.5) or 400
+			local cy = cam and (cam.ViewportSize.Y * 0.5) or 300
+			VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
+			task.defer(function()
+				pcall(function()
+					VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+				end)
+			end)
+		end)
+	end
+end
+
+local function updateSpinState(dt, myRoot, hum)
+	if not state.spinHack or not myRoot or hasActiveSightTarget then return end
+	if hum and hum.Sit then return end
+	if state.spinOnlyWhenMoving and hum and hum.MoveDirection.Magnitude < 0.05 then return end
+
+	spinDirSign = state.spinReverseDir and -1 or 1
+	spinAngleAccum = (spinAngleAccum + (state.spinSpeed * spinDirSign) * dt) % (math.pi * 2)
+	local pos = myRoot.Position
+	local vel = myRoot.AssemblyLinearVelocity
+	local extraPitch = state.spinWobblePitch and (math.sin(os.clock() * 14) * 0.12) or 0
+	myRoot.CFrame = CFrame.new(pos) * CFrame.Angles(extraPitch, spinAngleAccum, 0)
+	myRoot.AssemblyLinearVelocity = vel
+end
+
+local function applyGodModeStep(hum)
+	if not state.godMode or not hum then return end
+	pcall(function()
+		hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+		hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+		hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+		if hum.MaxHealth < 1e6 then
+			hum.MaxHealth = 1e6
+		end
+		if hum.Health < hum.MaxHealth then
+			hum.Health = hum.MaxHealth
+		end
+		if hum:GetState() == Enum.HumanoidStateType.Dead then
+			hum:ChangeState(Enum.HumanoidStateType.Running)
+		end
+	end)
+end
+
+local function applySkinByName(skinName)
+	local char = player.Character
+	if not char or not skinName then return end
+	local hue = ((#skinName * 41) % 360) / 360
+	local col = Color3.fromHSV(hue, 0.5, 0.92)
+	for _, p in ipairs(char:GetChildren()) do
+		if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+			p.Color = col
+		end
+	end
+end
+
+local function askConfirmSkinChange(skinName, onYes)
+	if playerGui:FindFirstChild("SkinConfirmModal") then
+		playerGui.SkinConfirmModal:Destroy()
+	end
+	local modalGui = Instance.new("ScreenGui")
+	modalGui.Name = "SkinConfirmModal"
+	modalGui.ResetOnSpawn = false
+	modalGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	modalGui.Parent = playerGui
+
+	local box = Instance.new("Frame")
+	box.Size = UDim2.new(0, 240, 0, 114)
+	box.Position = UDim2.new(0.5, -120, 0.5, -57)
+	box.BackgroundColor3 = Color3.fromRGB(24, 27, 33)
+	box.BorderSizePixel = 0
+	box.Parent = modalGui
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+	local st = Instance.new("UIStroke", box)
+	st.Color = Color3.fromRGB(55, 62, 74)
+	st.Thickness = 1
+
+	local msg = Instance.new("TextLabel")
+	msg.Size = UDim2.new(1, -16, 0, 56)
+	msg.Position = UDim2.new(0, 8, 0, 8)
+	msg.BackgroundTransparency = 1
+	msg.Text = "'" .. skinName .. "' 스킨 적용할까요?"
+	msg.TextColor3 = Color3.fromRGB(240, 244, 250)
+	msg.Font = Enum.Font.GothamBold
+	msg.TextSize = 11
+	msg.Parent = box
+
+	local yesBtn = Instance.new("TextButton")
+	yesBtn.Size = UDim2.new(0.5, -12, 0, 30)
+	yesBtn.Position = UDim2.new(0, 8, 1, -38)
+	yesBtn.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+	yesBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	yesBtn.Text = "예"
+	yesBtn.Font = Enum.Font.GothamBold
+	yesBtn.TextSize = 11
+	yesBtn.Parent = box
+	Instance.new("UICorner", yesBtn).CornerRadius = UDim.new(0, 5)
+
+	local noBtn = Instance.new("TextButton")
+	noBtn.Size = UDim2.new(0.5, -12, 0, 30)
+	noBtn.Position = UDim2.new(0.5, 4, 1, -38)
+	noBtn.BackgroundColor3 = Color3.fromRGB(52, 58, 68)
+	noBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	noBtn.Text = "아니요"
+	noBtn.Font = Enum.Font.GothamBold
+	noBtn.TextSize = 11
+	noBtn.Parent = box
+	Instance.new("UICorner", noBtn).CornerRadius = UDim.new(0, 5)
+
+	yesBtn.MouseButton1Click:Connect(function()
+		modalGui:Destroy()
+		if onYes then onYes() end
+	end)
+	noBtn.MouseButton1Click:Connect(function()
+		modalGui:Destroy()
+	end)
+end
+
+local function makeDraggable(handle, target, checkEnabledFn)
+	local dragging = false
+	local dragStart, startPos
+
+	handle.InputBegan:Connect(function(input)
+		if checkEnabledFn and not checkEnabledFn() then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = target.Position
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			target.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+local function openSkinChangerSubUI()
+	if playerGui:FindFirstChild("SkinChangerSubUI") then
+		playerGui.SkinChangerSubUI:Destroy()
+	end
+	local subGui = Instance.new("ScreenGui")
+	subGui.Name = "SkinChangerSubUI"
+	subGui.ResetOnSpawn = false
+	subGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	subGui.Parent = playerGui
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.new(0, 270, 0, 230)
+	panel.Position = UDim2.new(0.68, 0, 0.25, 0)
+	panel.BackgroundColor3 = Color3.fromRGB(22, 25, 31)
+	panel.BorderSizePixel = 0
+	panel.Parent = subGui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+	local pStroke = Instance.new("UIStroke", panel)
+	pStroke.Color = Color3.fromRGB(50, 56, 68)
+	pStroke.Thickness = 1
+
+	local header = Instance.new("Frame")
+	header.Size = UDim2.new(1, 0, 0, 28)
+	header.BackgroundColor3 = Color3.fromRGB(28, 32, 40)
+	header.BorderSizePixel = 0
+	header.Parent = panel
+	Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -54, 1, 0)
+	title.Position = UDim2.new(0, 10, 0, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "스킨 변경"
+	title.TextColor3 = Color3.fromRGB(240, 244, 250)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 11
+	title.Parent = header
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Size = UDim2.new(0, 40, 0, 20)
+	closeBtn.Position = UDim2.new(1, -44, 0, 4)
+	closeBtn.BackgroundColor3 = Color3.fromRGB(52, 58, 68)
+	closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	closeBtn.Text = "닫기"
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 10
+	closeBtn.Parent = header
+	Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 5)
+	closeBtn.MouseButton1Click:Connect(function() subGui:Destroy() end)
+	makeDraggable(header, panel)
+
+	local skinEntries = {
+		{name = "크림슨 바이퍼", image = "rbxassetid://7733715400"},
+		{name = "사이버 에메랄드", image = "rbxassetid://7733954760"},
+		{name = "팬텀 보이드", image = "rbxassetid://7733960981"},
+		{name = "솔라 플레어", image = "rbxassetid://7733771880"},
+		{name = "프로스트 오니", image = "rbxassetid://7733674079"},
+	}
+
+	local listScroll = Instance.new("ScrollingFrame")
+	listScroll.Size = UDim2.new(0.52, -8, 1, -72)
+	listScroll.Position = UDim2.new(0, 6, 0, 34)
+	listScroll.BackgroundColor3 = Color3.fromRGB(29, 33, 41)
+	listScroll.BorderSizePixel = 0
+	listScroll.ScrollBarThickness = 3
+	listScroll.CanvasSize = UDim2.new(0, 0, 0, #skinEntries * 30 + 6)
+	listScroll.Parent = panel
+	Instance.new("UICorner", listScroll).CornerRadius = UDim.new(0, 6)
+
+	local previewFrame = Instance.new("Frame")
+	previewFrame.Size = UDim2.new(0.46, -6, 1, -72)
+	previewFrame.Position = UDim2.new(0.54, 0, 0, 34)
+	previewFrame.BackgroundColor3 = Color3.fromRGB(29, 33, 41)
+	previewFrame.BorderSizePixel = 0
+	previewFrame.Parent = panel
+	Instance.new("UICorner", previewFrame).CornerRadius = UDim.new(0, 6)
+
+	local skinImg = Instance.new("ImageLabel")
+	skinImg.Size = UDim2.new(1, -12, 0, 82)
+	skinImg.Position = UDim2.new(0, 6, 0, 6)
+	skinImg.BackgroundColor3 = Color3.fromRGB(20, 23, 29)
+	skinImg.BorderSizePixel = 0
+	skinImg.ScaleType = Enum.ScaleType.Fit
+	skinImg.Image = ""
+	skinImg.Parent = previewFrame
+
+	local skinCaption = Instance.new("TextLabel")
+	skinCaption.Size = UDim2.new(1, -12, 0, 42)
+	skinCaption.Position = UDim2.new(0, 6, 0, 92)
+	skinCaption.BackgroundTransparency = 1
+	skinCaption.TextWrapped = true
+	skinCaption.TextColor3 = Color3.fromRGB(215, 222, 232)
+	skinCaption.Font = Enum.Font.GothamSemibold
+	skinCaption.TextSize = 10
+	skinCaption.Text = state.savedSkin and ("저장됨:\n" .. state.savedSkin) or "스킨 선택"
+	skinCaption.Parent = previewFrame
+
+	local pendingSkin = nil
+	for i, entry in ipairs(skinEntries) do
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(1, -8, 0, 25)
+		btn.Position = UDim2.new(0, 4, 0, 4 + (i - 1) * 30)
+		btn.BackgroundColor3 = Color3.fromRGB(40, 45, 56)
+		btn.TextColor3 = Color3.fromRGB(240, 244, 250)
+		btn.Text = entry.name
+		btn.Font = Enum.Font.Gotham
+		btn.TextSize = 10
+		btn.Parent = listScroll
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+		btn.MouseButton1Click:Connect(function()
+			skinImg.Image = entry.image
+			skinCaption.Text = "선택:\n" .. entry.name
+			askConfirmSkinChange(entry.name, function()
+				pendingSkin = entry.name
+				skinCaption.Text = "승인됨:\n" .. pendingSkin
+			end)
+		end)
+	end
+
+	local saveBtn = Instance.new("TextButton")
+	saveBtn.Size = UDim2.new(1, -12, 0, 28)
+	saveBtn.Position = UDim2.new(0, 6, 1, -34)
+	saveBtn.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+	saveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	saveBtn.Text = "세이브"
+	saveBtn.Font = Enum.Font.GothamBold
+	saveBtn.TextSize = 11
+	saveBtn.Parent = panel
+	Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 5)
+
+	saveBtn.MouseButton1Click:Connect(function()
+		if pendingSkin then
+			state.savedSkin = pendingSkin
+			applySkinByName(state.savedSkin)
+			skinCaption.Text = "세이브 완료:\n" .. state.savedSkin
+		end
+	end)
+end
+
+local function openEspColorPicker()
+	if playerGui:FindFirstChild("ESPColorPickerUI") then
+		playerGui.ESPColorPickerUI:Destroy()
+	end
+	local pickerGui = Instance.new("ScreenGui")
+	pickerGui.Name = "ESPColorPickerUI"
+	pickerGui.ResetOnSpawn = false
+	pickerGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	pickerGui.Parent = playerGui
+
+	local panel = Instance.new("Frame")
+	panel.Size = UDim2.new(0, 230, 0, 118)
+	panel.Position = UDim2.new(0.55, 0, 0.2, 0)
+	panel.BackgroundColor3 = Color3.fromRGB(22, 25, 31)
+	panel.BorderSizePixel = 0
+	panel.Parent = pickerGui
+	Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+	local pStroke = Instance.new("UIStroke", panel)
+	pStroke.Color = Color3.fromRGB(50, 56, 68)
+	pStroke.Thickness = 1
+
+	local header = Instance.new("Frame")
+	header.Size = UDim2.new(1, 0, 0, 26)
+	header.BackgroundColor3 = Color3.fromRGB(28, 32, 40)
+	header.BorderSizePixel = 0
+	header.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -48, 1, 0)
+	title.Position = UDim2.new(0, 8, 0, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "ESP 색상 바"
+	title.TextColor3 = Color3.fromRGB(240, 244, 250)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 10
+	title.Parent = header
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Size = UDim2.new(0, 36, 0, 18)
+	closeBtn.Position = UDim2.new(1, -40, 0, 4)
+	closeBtn.BackgroundColor3 = Color3.fromRGB(52, 58, 68)
+	closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	closeBtn.Text = "닫기"
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 9
+	closeBtn.Parent = header
+	closeBtn.MouseButton1Click:Connect(function() pickerGui:Destroy() end)
+	makeDraggable(header, panel)
+
+	local sample = Instance.new("Frame")
+	sample.Size = UDim2.new(0, 20, 0, 20)
+	sample.Position = UDim2.new(0, 10, 0, 34)
+	sample.BackgroundColor3 = getEspColor()
+	sample.BorderSizePixel = 0
+	sample.Parent = panel
+	Instance.new("UICorner", sample).CornerRadius = UDim.new(0, 4)
+
+	local info = Instance.new("TextLabel")
+	info.Size = UDim2.new(1, -44, 0, 20)
+	info.Position = UDim2.new(0, 36, 0, 34)
+	info.BackgroundTransparency = 1
+	info.Text = string.format("색조: %d°", math.floor(state.hue * 360))
+	info.TextColor3 = Color3.fromRGB(220, 226, 236)
+	info.TextXAlignment = Enum.TextXAlignment.Left
+	info.Font = Enum.Font.GothamSemibold
+	info.TextSize = 10
+	info.Parent = panel
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -20, 0, 20)
+	track.Position = UDim2.new(0, 10, 0, 72)
+	track.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	track.BorderSizePixel = 0
+	track.Parent = panel
+	Instance.new("UICorner", track).CornerRadius = UDim.new(0, 5)
+
+	local grad = Instance.new("UIGradient")
+	grad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 0, 0)),
+		ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 255, 0)),
+		ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 255, 0)),
+		ColorSequenceKeypoint.new(0.50, Color3.fromRGB(0, 255, 255)),
+		ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 0, 255)),
+		ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
+		ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 0, 0)),
+	})
+	grad.Parent = track
+
+	local knob = Instance.new("Frame")
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Size = UDim2.new(0, 10, 1, 4)
+	knob.Position = UDim2.new(state.hue, 0, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.BorderSizePixel = 0
+	knob.Parent = track
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(0, 3)
+
+	local sliding = false
+	local function setHueFromX(xPos)
+		local r = math.clamp((xPos - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+		state.hue = r
+		knob.Position = UDim2.new(r, 0, 0.5, 0)
+		sample.BackgroundColor3 = getEspColor()
+		info.Text = string.format("색조: %d°", math.floor(r * 360))
+	end
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = true
+			setHueFromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			setHueFromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = false
+		end
+	end)
+end
+
+local floatPart = Instance.new("Part")
+floatPart.Name = "OllieFloatPlatform"
+floatPart.Size = Vector3.new(8, 1, 8)
+floatPart.Anchored = true
+floatPart.Transparency = 0.65
+floatPart.CanCollide = true
+floatPart.Parent = Workspace
+
+local function syncMiscStats()
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		local baseSpeed = state.autoSprintWalk and 24 or 16
+		hum.WalkSpeed = state.speedBoost and 32 or baseSpeed
+		hum.UseJumpPower = true
+		hum.JumpPower = state.jumpBoost and 85 or 50
+	end
+end
+
+UserInputService.JumpRequest:Connect(function()
+	if state.infJump then
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end
+end)
+
+RunService.Stepped:Connect(function()
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	applyGodModeStep(hum)
+	syncMiscStats()
+
+	if char and state.noClip then
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") then
+				p.CanCollide = false
+			end
+		end
+	end
+
+	if state.autoJumpMove and hum and hum.MoveDirection.Magnitude > 0.1 and hum.FloorMaterial ~= Enum.Material.Air then
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+
+	if state.antiAfk and os.clock() - lastAfkTick > 45 then
+		lastAfkTick = os.clock()
+		pcall(function()
+			VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+			task.defer(function()
+				pcall(function()
+					VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+				end)
+			end)
+		end)
+	end
+end)
+
+player.CharacterAdded:Connect(function(char)
+	task.wait(state.fastRespawnState and 0.1 or 0.4)
+	if state.savedSkin then applySkinByName(state.savedSkin) end
+	syncMiscStats()
+	applyThirdPersonHack()
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	applyGodModeStep(hum)
+end)
+
+local lastFpsTime = os.clock()
+local frameCount = 0
+local currentFps = 60
+
+RunService.RenderStepped:Connect(function(dt)
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+
+	isMobileTouch = detectMobilePlatform()
+	rainbowHue = (rainbowHue + dt * 0.25) % 1
+
+	frameCount += 1
+	local now = os.clock()
+	if now - lastFpsTime >= 0.5 then
+		currentFps = math.floor(frameCount / (now - lastFpsTime))
+		frameCount = 0
+		lastFpsTime = now
+	end
+
+	local myChar = player.Character
+	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+	local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+
+	applyGodModeStep(myHum)
+	updateSpinState(dt, myRoot, myHum)
+
+	if state.thirdPersonHack and myRoot and myHum then
+		player.CameraMinZoomDistance = math.max(state.thirdPersonDist, 6)
+		player.CameraMaxZoomDistance = math.max(state.thirdPersonDist + 8, 14)
+	end
+
+	if state.orbitNearestEnemy and myRoot then
+		local nearRoot = nil
+		local nearDist = math.huge
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if isEnemyForEsp(plr) and plr.Character then
+				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				local h = plr.Character:FindFirstChildOfClass("Humanoid")
+				if hrp and h and h.Health > 0 then
+					local d = (hrp.Position - myRoot.Position).Magnitude
+					if d < nearDist then
+						nearDist = d
+						nearRoot = hrp
+					end
+				end
+			end
+		end
+		if nearRoot then
+			local ang = now * 5.5
+			local offset = Vector3.new(math.cos(ang) * 5.5, 0, math.sin(ang) * 5.5)
+			myRoot.CFrame = CFrame.lookAt(nearRoot.Position + offset, nearRoot.Position)
+		end
+	elseif state.autoFaceNearestEnemy and myRoot then
+		local nearRoot = nil
+		local nearDist = math.huge
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if isEnemyForEsp(plr) and plr.Character then
+				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				local h = plr.Character:FindFirstChildOfClass("Humanoid")
+				if hrp and h and h.Health > 0 then
+					local d = (hrp.Position - myRoot.Position).Magnitude
+					if d < nearDist then
+						nearDist = d
+						nearRoot = hrp
+					end
+				end
+			end
+		end
+		if nearRoot then
+			local flat = Vector3.new(nearRoot.Position.X - myRoot.Position.X, 0, nearRoot.Position.Z - myRoot.Position.Z)
+			if flat.Magnitude > 0.05 then
+				myRoot.CFrame = CFrame.lookAt(myRoot.Position, myRoot.Position + flat.Unit)
+			end
+		end
+	end
+
+	local espColor = getEspColor()
+	darkShade.Visible = state.darkOverlay
+	crosshair.Visible = state.crosshairDot
+	chLineH.Visible = state.crosshairPlus
+	chLineV.Visible = state.crosshairPlus
+
+	if state.crosshairDynamic and myHum then
+		local spreadPx = math.clamp(14 + myHum.MoveDirection.Magnitude * 14, 10, 32)
+		chLineH.Size = UDim2.new(0, spreadPx, 0, 2)
+		chLineV.Size = UDim2.new(0, 2, 0, spreadPx)
+	else
+		chLineH.Size = UDim2.new(0, 16, 0, 2)
+		chLineV.Size = UDim2.new(0, 2, 0, 16)
+	end
+
+	fovCircle.Visible = (state.aimbot or state.sightHeadShoot or state.fastHeadKillMode) and state.showFov
+	fovCircle.Size = UDim2.new(0, state.fovRadius * 2, 0, state.fovRadius * 2)
+	fovStroke.Color = state.aimFovRainbow and Color3.fromHSV(rainbowHue, 0.9, 1) or Color3.fromRGB(255, 255, 255)
+
+	radarFrame.Visible = state.radarEnabled
+	radarFrame.Size = state.radarCompactMode and UDim2.new(0, 92, 0, 92) or UDim2.new(0, 112, 0, 112)
+	radarRing.Visible = state.radarShowDistRing
+	radarStroke.Color = state.espRadarSyncColor and espColor or Color3.fromRGB(70, 210, 255)
+
+	local baseFov = state.camFovBoost and 100 or 70
+	if state.thirdPersonHack then baseFov = math.max(baseFov, 88) end
+	if state.thirdPersonPeek then baseFov += 8 end
+	cam.FieldOfView = baseFov
+
+	applyLightingState()
+
+	if (state.airFloat or state.safePlatformLock) and myRoot then
+		floatPart.Position = myRoot.Position - Vector3.new(0, 3.8, 0)
+	else
+		floatPart.Position = Vector3.new(0, -500, 0)
+	end
+
+	local enemyAliveCount = 0
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if isEnemyForEsp(plr) and plr.Character then
+			local h = plr.Character:FindFirstChildOfClass("Humanoid")
+			if h and h.Health > 0 then enemyAliveCount += 1 end
+		end
+	end
+
+	alertFlash.Visible = state.screenFlashAlert and (enemyAliveCount > 0)
+
+	hudLabel.Visible = state.fpsHud or state.posHud or state.pingHud or state.enemyCountHud or state.spinStatusHud or state.thirdPersonHack
+	if hudLabel.Visible then
+		local lines = {}
+		if state.fpsHud then table.insert(lines, "FPS:" .. tostring(currentFps)) end
+		if state.pingHud then
+			local pingMs = math.floor((player:GetNetworkPing() or 0) * 1000)
+			table.insert(lines, "PING:" .. tostring(pingMs) .. "ms")
+		end
+		if state.enemyCountHud then table.insert(lines, "ENEMY:" .. tostring(enemyAliveCount)) end
+		if state.spinStatusHud then table.insert(lines, "SPIN:" .. (state.spinHack and "ON" or "OFF")) end
+		if state.thirdPersonHack then table.insert(lines, "3RD:ON") end
+		if state.posHud and myRoot then
+			table.insert(lines, string.format("POS:%.0f,%.0f,%.0f", myRoot.Position.X, myRoot.Position.Y, myRoot.Position.Z))
+		end
+		hudLabel.Text = " " .. table.concat(lines, " | ")
+	end
+
+	local vpSize = cam.ViewportSize
+	local tracerOrigin = state.tracerTopMode and Vector2.new(vpSize.X * 0.5, 0)
+		or (state.tracerCenterMode and Vector2.new(vpSize.X * 0.5, vpSize.Y * 0.5)
+		or Vector2.new(vpSize.X * 0.5, vpSize.Y))
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local v = getVisual(plr)
+		local blip = getRadarBlip(plr)
+		local enemy = isEnemyForEsp(plr)
+		local char = plr.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local head = char and char:FindFirstChild("Head")
+		local alive = hum and hum.Health > 0
+
+		local inRange = true
+		if state.espMaxDistFilter and hrp and myRoot then
+			inRange = ((hrp.Position - myRoot.Position).Magnitude <= 160)
+		end
+
+		local visOk = true
+		if state.espOnlyVisible and head then
+			visOk = isPartVisible(cam, head.Position, char)
+		end
+
+		if state.radarEnabled and enemy and hrp and myRoot and alive and inRange then
+			local rel = hrp.Position - myRoot.Position
+			if state.radarRotateWithCam then
+				local look = cam.CFrame.LookVector
+				local yaw = math.atan2(-look.X, -look.Z)
+				local cosY, sinY = math.cos(yaw), math.sin(yaw)
+				rel = Vector3.new(rel.X * cosY - rel.Z * sinY, 0, rel.X * sinY + rel.Z * cosY)
+			end
+			local radHalf = radarFrame.AbsoluteSize.X * 0.44
+			local scale = radHalf / math.max(state.radarRange, 20)
+			local rx = math.clamp(rel.X * scale, -radHalf, radHalf)
+			local rz = math.clamp(rel.Z * scale, -radHalf, radHalf)
+			blip.Position = UDim2.new(0.5, rx, 0.5, rz)
+			blip.Size = state.radarBlipSizeBoost and UDim2.new(0, 9, 0, 9) or UDim2.new(0, 6, 0, 6)
+			blip.BackgroundColor3 = espColor
+			blip.Visible = true
+		else
+			blip.Visible = false
+		end
+
+		if enemy and char and hrp and head and (alive or not state.espHideDead) and inRange and visOk then
+			v.boxStroke.Color = espColor
+			v.boxStroke.Thickness = state.skeletonThick and 2.1 or 1.3
+			v.box.BackgroundTransparency = state.boxFillEsp and 0.82 or 1
+			v.box.BackgroundColor3 = espColor
+			v.headStroke.Color = espColor
+			v.hl.FillColor = espColor
+			v.hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+			v.hl.FillTransparency = state.chamsPulse and (0.45 + math.sin(now * 6) * 0.2) or 0.55
+			v.hl.Adornee = char
+			v.hl.Enabled = state.esp3D
+
+			local topWorld, topOn = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.85, 0))
+			local botWorld, botOn = cam:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3.0, 0))
+			local centerWorld, centerOn = cam:WorldToViewportPoint(hrp.Position)
+
+			local rawHeight = math.abs(topWorld.Y - botWorld.Y)
+			local boxHeight = math.clamp(rawHeight, 12, 440)
+			local boxWidth = math.clamp(boxHeight * 0.54, 10, 240)
+
+			if state.esp2D and (topOn or botOn or centerOn) and centerWorld.Z > 0 then
+				local cx = (topWorld.X + botWorld.X) * 0.5
+				local topY = math.min(topWorld.Y, botWorld.Y)
+				v.box.Size = UDim2.new(0, boxWidth, 0, boxHeight)
+				v.box.Position = UDim2.new(0, cx - boxWidth * 0.5, 0, topY)
+				v.box.Visible = true
+
+				v.hpBg.Visible = state.healthBar
+				if state.healthBar and hum then
+					local ratio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+					v.hpFill.Size = UDim2.new(1, 0, ratio, 0)
+				end
+
+				local parts = {}
+				if state.showName then table.insert(parts, plr.DisplayName) end
+				if state.healthTextEsp and hum then table.insert(parts, math.floor(hum.Health) .. "HP") end
+				if state.showDistance and myRoot then table.insert(parts, math.floor((hrp.Position - myRoot.Position).Magnitude) .. "m") end
+				if state.espShowToolName then
+					local t = char:FindFirstChildOfClass("Tool")
+					if t then table.insert(parts, "[" .. t.Name .. "]") end
+				end
+				if state.lookingAtMeEsp and myRoot then
+					local lookDiff = (myRoot.Position - hrp.Position).Unit:Dot(hrp.CFrame.LookVector)
+					if lookDiff > 0.85 then table.insert(parts, "!AIM!") end
+				end
+				v.tag.Text = table.concat(parts, " ")
+				v.tag.Visible = (#parts > 0)
+			else
+				v.box.Visible = false
+			end
+
+			if state.tracers and centerOn and centerWorld.Z > 0 then
+				updateLine(v.tracer, tracerOrigin, Vector2.new(centerWorld.X, centerWorld.Y), state.skeletonThick and 2 or 1.2, espColor)
+			else
+				v.tracer.Visible = false
+			end
+
+			if state.skeleton then
+				local headVP, headOn = cam:WorldToViewportPoint(head.Position)
+				if headOn and headVP.Z > 0 and state.headDotEsp then
+					local radiusPx = math.clamp(rawHeight * 0.065, 2, 9)
+					v.headCircle.Size = UDim2.new(0, radiusPx * 2, 0, radiusPx * 2)
+					v.headCircle.Position = UDim2.new(0, headVP.X, 0, headVP.Y)
+					v.headCircle.Visible = true
+				else
+					v.headCircle.Visible = false
+				end
+
+				local isR15 = char:FindFirstChild("UpperTorso") ~= nil
+				local pairsList = isR15 and BONE_PAIRS_R15 or BONE_PAIRS_R6
+				local boneIdx = 1
+				for _, pair in ipairs(pairsList) do
+					if boneIdx <= #v.bones then
+						local pA = char:FindFirstChild(pair[1])
+						local pB = char:FindFirstChild(pair[2])
+						if pA and pA:IsA("BasePart") and pB and pB:IsA("BasePart") then
+							local sA, onA = cam:WorldToViewportPoint(pA.Position)
+							local sB, onB = cam:WorldToViewportPoint(pB.Position)
+							if (onA or onB) and sA.Z > 0 and sB.Z > 0 then
+								updateLine(v.bones[boneIdx], Vector2.new(sA.X, sA.Y), Vector2.new(sB.X, sB.Y), state.skeletonThick and 2.1 or 1.3, espColor)
+								boneIdx += 1
+							end
+						end
+					end
+				end
+				for i = boneIdx, #v.bones do v.bones[i].Visible = false end
+			else
+				v.headCircle.Visible = false
+				for _, b in ipairs(v.bones) do b.Visible = false end
+			end
+		else
+			hideVisual(v)
+		end
+	end
+end)
+
+RunService:BindToRenderStep("OllieAimbotAndSightHead", Enum.RenderPriority.Camera.Value + 5, function()
+	local cam = Workspace.CurrentCamera
+	if not cam then return end
+	hasActiveSightTarget = false
+
+	if state.sightHeadShoot or state.fastHeadKillMode or state.spinHack then
+		local sightHead = getNearestHeadInScreenSight()
+		if sightHead then
+			hasActiveSightTarget = true
+			local targetPos = getPredictedPos(sightHead, sightHead.Parent and sightHead.Parent:FindFirstChild("HumanoidRootPart"))
+			local camPos = cam.CFrame.Position
+			cam.CFrame = CFrame.new(camPos, targetPos)
+			local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if myRoot then
+				local flatDir = Vector3.new(targetPos.X - myRoot.Position.X, 0, targetPos.Z - myRoot.Position.Z)
+				if flatDir.Magnitude > 0.05 then
+					myRoot.CFrame = CFrame.lookAt(myRoot.Position, myRoot.Position + flatDir.Unit)
+				end
+			end
+			if state.autoFireWhenAimed or state.fastHeadKillMode then
+				triggerFireAction()
+			end
+			return
+		end
+	end
+
+	if state.triggerBot then
+		local centerHead = getNearestHeadInScreenSight()
+		if centerHead then
+			local vp = cam.ViewportSize
+			local sp = cam:WorldToViewportPoint(centerHead.Position)
+			local distCenter = (Vector2.new(sp.X, sp.Y) - Vector2.new(vp.X * 0.5, vp.Y * 0.5)).Magnitude
+			if distCenter <= 28 then
+				triggerFireAction()
+			end
+		end
+	end
+
+	if state.aimbot then
+		local target = getBestAimTarget()
+		if target then
+			local targetPos = getPredictedPos(target, target.Parent and target.Parent:FindFirstChild("HumanoidRootPart"))
+			local camPos = cam.CFrame.Position
+			local lookCFrame = CFrame.lookAt(camPos, targetPos)
+			local smoothFactor = (state.aimSnapBoost or state.fastHeadKillMode) and 0.96 or math.clamp(state.aimSmooth, 0.05, 1)
+			local blendedLook = cam.CFrame.LookVector:Lerp(lookCFrame.LookVector, smoothFactor).Unit
+			cam.CFrame = CFrame.new(camPos, camPos + blendedLook)
+			if state.autoFireWhenAimed or state.fastHeadKillMode then
+				triggerFireAction()
+			end
+		end
+	end
+end)
+
+RunService:BindToRenderStep("OllieSpinLateApply", Enum.RenderPriority.Camera.Value + 10, function()
+	if not state.spinHack or hasActiveSightTarget then return end
+	local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local myHum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if state.spinOnlyWhenMoving and myHum and myHum.MoveDirection.Magnitude < 0.05 then return end
+	if myRoot and (not myHum or not myHum.Sit) then
+		local pos = myRoot.Position
+		local vel = myRoot.AssemblyLinearVelocity
+		local extraPitch = state.spinWobblePitch and (math.sin(os.clock() * 14) * 0.12) or 0
+		myRoot.CFrame = CFrame.new(pos) * CFrame.Angles(extraPitch, spinAngleAccum, 0)
+		myRoot.AssemblyLinearVelocity = vel
+	end
+end)
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "ToggleButton"
+toggleBtn.AnchorPoint = Vector2.new(1, 0)
+toggleBtn.Size = UDim2.new(0, 74, 0, 26)
+toggleBtn.Position = UDim2.new(1, -92, 0, 10)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(24, 27, 33)
+toggleBtn.TextColor3 = Color3.fromRGB(240, 244, 250)
+toggleBtn.Text = "ZEROS"
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 11
+toggleBtn.Parent = screenGui
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 6)
+local tStroke = Instance.new("UIStroke", toggleBtn)
+tStroke.Color = Color3.fromRGB(59, 130, 246)
+tStroke.Thickness = 1
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 356, 0, 232)
+mainFrame.Position = UDim2.new(0.5, -178, 0.5, -116)
+mainFrame.BackgroundColor3 = Color3.fromRGB(19, 22, 27)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
+local mainStroke = Instance.new("UIStroke", mainFrame)
+mainStroke.Color = Color3.fromRGB(45, 51, 62)
+mainStroke.Thickness = 1
+
+local topBar = Instance.new("Frame")
+topBar.Size = UDim2.new(1, 0, 0, 28)
+topBar.BackgroundColor3 = Color3.fromRGB(25, 29, 36)
+topBar.BorderSizePixel = 0
+topBar.Parent = mainFrame
+Instance.new("UICorner", topBar).CornerRadius = UDim.new(0, 8)
+
+local brandDot = Instance.new("Frame")
+brandDot.Size = UDim2.new(0, 8, 0, 8)
+brandDot.Position = UDim2.new(0, 10, 0.5, -4)
+brandDot.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+brandDot.BorderSizePixel = 0
+brandDot.Parent = topBar
+Instance.new("UICorner", brandDot).CornerRadius = UDim.new(1, 0)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -90, 1, 0)
+titleLabel.Position = UDim2.new(0, 24, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = isMobileTouch and "ZEROS  |  모바일" or "ZEROS  |  PC"
+titleLabel.TextColor3 = Color3.fromRGB(242, 246, 252)
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 11
+titleLabel.Parent = topBar
+makeDraggable(topBar, mainFrame)
+
+local miniHideBtn = Instance.new("TextButton")
+miniHideBtn.Size = UDim2.new(0, 38, 0, 18)
+miniHideBtn.Position = UDim2.new(1, -44, 0, 5)
+miniHideBtn.BackgroundColor3 = Color3.fromRGB(40, 46, 56)
+miniHideBtn.TextColor3 = Color3.fromRGB(230, 235, 242)
+miniHideBtn.Text = "숨김"
+miniHideBtn.Font = Enum.Font.GothamBold
+miniHideBtn.TextSize = 9
+miniHideBtn.Parent = topBar
+Instance.new("UICorner", miniHideBtn).CornerRadius = UDim.new(0, 5)
+miniHideBtn.MouseButton1Click:Connect(function()
+	mainFrame.Visible = false
+end)
+
+local sideBar = Instance.new("ScrollingFrame")
+sideBar.Size = UDim2.new(0, 86, 1, -28)
+sideBar.Position = UDim2.new(0, 0, 0, 28)
+sideBar.BackgroundColor3 = Color3.fromRGB(22, 25, 31)
+sideBar.BorderSizePixel = 0
+sideBar.ScrollBarThickness = 2
+sideBar.CanvasSize = UDim2.new(0, 0, 0, 180)
+sideBar.Parent = mainFrame
+
+local contentArea = Instance.new("Frame")
+contentArea.Size = UDim2.new(1, -86, 1, -28)
+contentArea.Position = UDim2.new(0, 86, 0, 28)
+contentArea.BackgroundColor3 = Color3.fromRGB(19, 22, 27)
+contentArea.BorderSizePixel = 0
+contentArea.Parent = mainFrame
+
+local detailPopup = Instance.new("Frame")
+detailPopup.Size = UDim2.new(1, -16, 0, 74)
+detailPopup.Position = UDim2.new(0, 8, 1, -82)
+detailPopup.BackgroundColor3 = Color3.fromRGB(27, 31, 39)
+detailPopup.BorderSizePixel = 0
+detailPopup.Visible = false
+detailPopup.ZIndex = 15
+detailPopup.Parent = contentArea
+Instance.new("UICorner", detailPopup).CornerRadius = UDim.new(0, 7)
+local dStroke = Instance.new("UIStroke", detailPopup)
+dStroke.Color = Color3.fromRGB(59, 130, 246)
+dStroke.Thickness = 1
+
+local detailTitle = Instance.new("TextLabel")
+detailTitle.Size = UDim2.new(1, -56, 0, 18)
+detailTitle.Position = UDim2.new(0, 10, 0, 6)
+detailTitle.BackgroundTransparency = 1
+detailTitle.Text = "상세정보"
+detailTitle.TextColor3 = Color3.fromRGB(125, 185, 255)
+detailTitle.TextXAlignment = Enum.TextXAlignment.Left
+detailTitle.Font = Enum.Font.GothamBold
+detailTitle.TextSize = 10
+detailTitle.ZIndex = 16
+detailTitle.Parent = detailPopup
+
+local detailClose = Instance.new("TextButton")
+detailClose.Size = UDim2.new(0, 40, 0, 18)
+detailClose.Position = UDim2.new(1, -48, 0, 6)
+detailClose.BackgroundColor3 = Color3.fromRGB(45, 51, 62)
+detailClose.TextColor3 = Color3.fromRGB(240, 244, 250)
+detailClose.Text = "닫기"
+detailClose.Font = Enum.Font.GothamBold
+detailClose.TextSize = 9
+detailClose.ZIndex = 16
+detailClose.Parent = detailPopup
+Instance.new("UICorner", detailClose).CornerRadius = UDim.new(0, 4)
+detailClose.MouseButton1Click:Connect(function()
+	detailPopup.Visible = false
+end)
+
+local detailBody = Instance.new("TextLabel")
+detailBody.Size = UDim2.new(1, -20, 0, 40)
+detailBody.Position = UDim2.new(0, 10, 0, 26)
+detailBody.BackgroundTransparency = 1
+detailBody.Text = ""
+detailBody.TextWrapped = true
+detailBody.TextColor3 = Color3.fromRGB(225, 231, 240)
+detailBody.TextXAlignment = Enum.TextXAlignment.Left
+detailBody.TextYAlignment = Enum.TextYAlignment.Top
+detailBody.Font = Enum.Font.Gotham
+detailBody.TextSize = 10
+detailBody.ZIndex = 16
+detailBody.Parent = detailPopup
+
+local function showFeatureDetail(featName, featDesc)
+	detailTitle.Text = featName .. "  |  상세정보"
+	detailBody.Text = featDesc
+	detailPopup.Visible = true
+end
+
+local function makeScrollPage(name)
+	local sf = Instance.new("ScrollingFrame")
+	sf.Name = name .. "Page"
+	sf.Size = UDim2.new(1, 0, 1, 0)
+	sf.BackgroundTransparency = 1
+	sf.BorderSizePixel = 0
+	sf.ScrollBarThickness = 3
+	sf.Visible = false
+	sf.Parent = contentArea
+	return sf
+end
+
+local espPage = makeScrollPage("ESP")
+local radarPage = makeScrollPage("Radar")
+local aimPage = makeScrollPage("Aimbot")
+local visPage = makeScrollPage("Visual")
+local miscPage = makeScrollPage("Misc")
+espPage.Visible = true
+
+local tabButtons = {}
+local function makeTab(text, idx, page)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -10, 0, 26)
+	b.Position = UDim2.new(0, 5, 0, 6 + (idx - 1) * 32)
+	b.BackgroundColor3 = (idx == 1) and Color3.fromRGB(59, 130, 246) or Color3.fromRGB(30, 34, 42)
+	b.TextColor3 = Color3.fromRGB(240, 244, 250)
+	b.Text = text
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 10
+	b.Parent = sideBar
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	table.insert(tabButtons, {btn = b, page = page})
+
+	b.MouseButton1Click:Connect(function()
+		detailPopup.Visible = false
+		for _, item in ipairs(tabButtons) do
+			item.page.Visible = false
+			item.btn.BackgroundColor3 = Color3.fromRGB(30, 34, 42)
+		end
+		page.Visible = true
+		b.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+	end)
+end
+
+makeTab("시야핵", 1, espPage)
+makeTab("레이더", 2, radarPage)
+makeTab("에임/사격", 3, aimPage)
+makeTab("화면/시점", 4, visPage)
+makeTab("이동/기타", 5, miscPage)
+
+local function addFeatureRow(parent, label, y, kind, initial, bgOrCb, cbOrInfo, infoText)
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(1, -14, 0, 24)
+	card.Position = UDim2.new(0, 7, 0, y)
+	card.BackgroundColor3 = Color3.fromRGB(26, 30, 38)
+	card.BorderSizePixel = 0
+	card.Parent = parent
+	Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6)
+
+	local actionBtn = Instance.new("TextButton")
+	actionBtn.Size = UDim2.new(1, -60, 1, -4)
+	actionBtn.Position = UDim2.new(0, 2, 0, 2)
+	actionBtn.BorderSizePixel = 0
+	actionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	actionBtn.TextXAlignment = Enum.TextXAlignment.Left
+	actionBtn.Font = Enum.Font.GothamBold
+	actionBtn.TextSize = 9
+	actionBtn.Parent = card
+	Instance.new("UICorner", actionBtn).CornerRadius = UDim.new(0, 5)
+
+	local infoBtn = Instance.new("TextButton")
+	infoBtn.Size = UDim2.new(0, 52, 1, -4)
+	infoBtn.Position = UDim2.new(1, -54, 0, 2)
+	infoBtn.BackgroundColor3 = Color3.fromRGB(38, 44, 55)
+	infoBtn.TextColor3 = Color3.fromRGB(165, 195, 235)
+	infoBtn.Text = "상세정보"
+	infoBtn.Font = Enum.Font.GothamBold
+	infoBtn.TextSize = 9
+	infoBtn.Parent = card
+	Instance.new("UICorner", infoBtn).CornerRadius = UDim.new(0, 5)
+
+	if kind == "toggle" then
+		local on = initial
+		actionBtn.Text = "  " .. label .. (on and "  [ON]" or "  [OFF]")
+		actionBtn.BackgroundColor3 = on and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(33, 37, 46)
+		actionBtn.MouseButton1Click:Connect(function()
+			on = not on
+			actionBtn.Text = "  " .. label .. (on and "  [ON]" or "  [OFF]")
+			actionBtn.BackgroundColor3 = on and Color3.fromRGB(37, 99, 235) or Color3.fromRGB(33, 37, 46)
+			bgOrCb(on)
+		end)
+		infoBtn.MouseButton1Click:Connect(function()
+			showFeatureDetail(label, cbOrInfo or "기능 설명")
+		end)
+	else
+		actionBtn.Text = "  " .. label
+		actionBtn.BackgroundColor3 = bgOrCb or Color3.fromRGB(45, 58, 82)
+		actionBtn.MouseButton1Click:Connect(cbOrInfo)
+		infoBtn.MouseButton1Click:Connect(function()
+			showFeatureDetail(label, infoText or "기능 설명")
+		end)
+	end
+end
+
+local function populateList(page, items)
+	page.CanvasSize = UDim2.new(0, 0, 0, #items * 28 + 10)
+	for i, item in ipairs(items) do
+		local y = 5 + (i - 1) * 28
+		if item.kind == "toggle" then
+			addFeatureRow(page, item.label, y, "toggle", item.val, item.fn, item.info)
+		else
+			addFeatureRow(page, item.label, y, "action", false, item.bg, item.fn, item.info)
+		end
+	end
+end
+
+populateList(espPage, {
+	{kind="toggle", label="팀 체크", val=state.teamCheck, fn=function(v) state.teamCheck=v end, info="같은 팀 플레이어를 시야핵 대상에서 제외해."},
+	{kind="toggle", label="2D 박스", val=state.esp2D, fn=function(v) state.esp2D=v end, info="화면상 적 캐릭터 위치에 2D 박스를 표시해."},
+	{kind="toggle", label="체력바", val=state.healthBar, fn=function(v) state.healthBar=v end, info="2D 박스 옆에 적의 현재 체력 비율 바를 띄워."},
+	{kind="toggle", label="트레이서", val=state.tracers, fn=function(v) state.tracers=v end, info="화면 기준점에서 적 위치까지 연결선을 그어."},
+	{kind="toggle", label="스켈레톤", val=state.skeleton, fn=function(v) state.skeleton=v end, info="적 캐릭터의 관절과 뼈대 선을 화면에 그려."},
+	{kind="toggle", label="3D 하이라이트", val=state.esp3D, fn=function(v) state.esp3D=v end, info="벽 너머 적 캐릭터 전체를 3D 하이라이트로 강조해."},
+	{kind="toggle", label="거리 표시", val=state.showDistance, fn=function(v) state.showDistance=v end, info="적 태그에 내 캐릭터와의 거리(m)를 표시해."},
+	{kind="toggle", label="이름 표시", val=state.showName, fn=function(v) state.showName=v end, info="적 태그에 표시 이름을 띄워."},
+	{kind="toggle", label="머리 원", val=state.headDotEsp, fn=function(v) state.headDotEsp=v end, info="적 머리 위치에 원형 마커를 표시해."},
+	{kind="toggle", label="박스 채움", val=state.boxFillEsp, fn=function(v) state.boxFillEsp=v end, info="2D 박스 내부를 반투명 색으로 채워."},
+	{kind="toggle", label="체력 숫자", val=state.healthTextEsp, fn=function(v) state.healthTextEsp=v end, info="적 태그에 남은 체력(HP) 숫자를 표시해."},
+	{kind="toggle", label="무기명 표시", val=state.espShowToolName, fn=function(v) state.espShowToolName=v end, info="적이 들고 있는 도구/무기 이름을 표시해."},
+	{kind="toggle", label="조준 경고", val=state.lookingAtMeEsp, fn=function(v) state.lookingAtMeEsp=v end, info="적이 나를 바라보고 조준 중일 때 !AIM!을 표시해."},
+	{kind="toggle", label="트레이서 상단", val=state.tracerTopMode, fn=function(v) state.tracerTopMode=v end, info="트레이서 시작점을 화면 위쪽 중앙으로 바꿔."},
+	{kind="toggle", label="트레이서 중앙", val=state.tracerCenterMode, fn=function(v) state.tracerCenterMode=v end, info="트레이서 시작점을 화면 정중앙으로 바꿔."},
+	{kind="toggle", label="선 굵기 강조", val=state.skeletonThick, fn=function(v) state.skeletonThick=v end, info="박스, 트레이서, 스켈레톤 선을 더 굵게 그려."},
+	{kind="toggle", label="하이라이트 맥동", val=state.chamsPulse, fn=function(v) state.chamsPulse=v end, info="3D 하이라이트 투명도가 주기적으로 변하게 해."},
+	{kind="toggle", label="레인보우 색상", val=state.rainbowEsp, fn=function(v) state.rainbowEsp=v end, info="시야핵과 연동된 색상이 무지개색으로 순환해."},
+	{kind="toggle", label="160m 거리 제한", val=state.espMaxDistFilter, fn=function(v) state.espMaxDistFilter=v end, info="160m 이내에 있는 적만 시야핵에 표시해."},
+	{kind="toggle", label="보이는 적만", val=state.espOnlyVisible, fn=function(v) state.espOnlyVisible=v end, info="장애물에 가려지지 않고 보이는 적만 표시해."},
+	{kind="toggle", label="사망자 숨김", val=state.espHideDead, fn=function(v) state.espHideDead=v end, info="체력이 0인 사망 플레이어는 시야핵에서 숨겨."},
+	{kind="toggle", label="레이더 색 연동", val=state.espRadarSyncColor, fn=function(v) state.espRadarSyncColor=v end, info="레이더 테두리 색상을 현재 ESP 색상과 맞춰."},
+	{kind="action", label="색상 선택창", bg=Color3.fromRGB(59,130,246), fn=openEspColorPicker, info="색조 슬라이더로 시야핵 색상을 직접 골라."},
+})
+
+populateList(radarPage, {
+	{kind="toggle", label="레이더 표시", val=state.radarEnabled, fn=function(v) state.radarEnabled=v end, info="주변 적 위치를 보여주는 미니 레이더를 띄워."},
+	{kind="toggle", label="레이더 이동", val=state.radarDraggable, fn=function(v) state.radarDraggable=v end, info="레이더 창을 터치나 마우스로 끌어 옮길 수 있게 해."},
+	{kind="toggle", label="카메라 회전", val=state.radarRotateWithCam, fn=function(v) state.radarRotateWithCam=v end, info="내 카메라 방향에 맞춰 레이더 좌표를 회전시켜."},
+	{kind="toggle", label="거리 링 표시", val=state.radarShowDistRing, fn=function(v) state.radarShowDistRing=v end, info="레이더 안쪽에 거리 기준 원을 표시해."},
+	{kind="toggle", label="적 점 확대", val=state.radarBlipSizeBoost, fn=function(v) state.radarBlipSizeBoost=v end, info="레이더에 찍히는 적 점 크기를 키워."},
+	{kind="toggle", label="미니 크기", val=state.radarCompactMode, fn=function(v) state.radarCompactMode=v end, info="레이더 크기를 더 작게 줄여."},
+	{kind="toggle", label="ESP 색 연동", val=state.espRadarSyncColor, fn=function(v) state.espRadarSyncColor=v end, info="레이더 테두리 색상을 ESP 색상과 맞춰."},
+	{kind="toggle", label="레인보우 연동", val=state.rainbowEsp, fn=function(v) state.rainbowEsp=v end, info="레이더와 ESP 색상을 무지개로 돌려."},
+	{kind="action", label="범위 전환", bg=Color3.fromRGB(45,54,70), fn=function()
+		state.radarRange = (state.radarRange == 140) and 260 or 140
+	end, info="레이더 탐지 범위를 140m와 260m 사이에서 전환해."},
+	{kind="action", label="색상 선택창", bg=Color3.fromRGB(59,130,246), fn=openEspColorPicker, info="레이더·ESP 색상을 고르는 슬라이더 창을 열어."},
+})
+
+populateList(aimPage, {
+	{kind="toggle", label="팀 체크", val=state.aimTeamCheck, fn=function(v) state.aimTeamCheck=v end, info="같은 팀 플레이어를 에임 및 자동 사격 대상에서 제외해."},
+	{kind="toggle", label="시야 헤드 고속사격", val=state.fastHeadKillMode, fn=function(v)
+		state.fastHeadKillMode = v
+		if v then state.sightHeadShoot = true; state.autoFireWhenAimed = true end
+	end, info="시야 안 적 머리를 빠르게 조준하면서 초고속으로 연사해."},
+	{kind="toggle", label="시야 헤드 조준", val=state.sightHeadShoot, fn=function(v) state.sightHeadShoot=v end, info="화면 시야에 보이는 가장 가까운 적 머리로 조준을 맞춰."},
+	{kind="toggle", label="스핀핵", val=state.spinHack, fn=function(v) state.spinHack=v end, info="캐릭터를 빠르게 회전시키고 시야에 적이 잡히면 조준으로 전환해."},
+	{kind="toggle", label="에임봇", val=state.aimbot, fn=function(v) state.aimbot=v end, info="FOV 원 안의 대상을 목표 부위로 조준 보정해."},
+	{kind="toggle", label="FOV 원 표시", val=state.showFov, fn=function(v) state.showFov=v end, info="에임 인식 범위 원을 화면 중앙에 그려."},
+	{kind="toggle", label="머리 우선 조준", val=state.aimHead, fn=function(v) state.aimHead=v end, info="켜면 머리를 조준하고 끄면 몸통 기준점을 조준해."},
+	{kind="toggle", label="조준 시 자동발사", val=state.autoFireWhenAimed, fn=function(v) state.autoFireWhenAimed=v end, info="대상을 조준했을 때 자동으로 사격 동작을 실행해."},
+	{kind="toggle", label="트리거봇", val=state.triggerBot, fn=function(v) state.triggerBot=v end, info="중앙 조준선 근처에 적 머리가 오면 자동으로 발사해."},
+	{kind="toggle", label="이동 예측", val=state.aimPredictMove, fn=function(v) state.aimPredictMove=v end, info="움직이는 적의 속도를 계산해 앞쪽 위치를 예측 조준해."},
+	{kind="toggle", label="타겟 고정", val=state.aimStickTarget, fn=function(v) state.aimStickTarget=v end, info="현재 잡은 대상을 일정 범위 안에서 계속 유지해."},
+	{kind="toggle", label="저체력 우선", val=state.aimLowestHp, fn=function(v) state.aimLowestHp=v end, info="체력이 가장 적은 적을 우선적으로 조준해."},
+	{kind="toggle", label="근거리 우선", val=function(v) state.aimNearestWorld=v end, info="내 위치에서 가장 가까운 적을 우선 조준해."},
+	{kind="toggle", label="초고속 스냅", val=state.aimSnapBoost, fn=function(v) state.aimSnapBoost=v end, info="조준 전환 속도를 매우 빠르게 끌어올려."},
+	{kind="toggle", label="스핀 역회전", val=state.spinReverseDir, fn=function(v) state.spinReverseDir=v end, info="스핀핵 회전 방향을 반대로 돌려."},
+	{kind="toggle", label="스핀 상하 흔들림", val=state.spinWobblePitch, fn=function(v) state.spinWobblePitch=v end, info="스핀 회전 중 상하 각도 흔들림을 더해."},
+	{kind="toggle", label="이동 중 스핀", val=state.spinOnlyWhenMoving, fn=function(v) state.spinOnlyWhenMoving=v end, info="캐릭터가 이동 중일 때만 스핀핵이 작동하게 해."},
+	{kind="toggle", label="연사 가속", val=state.rapidFireClick, fn=function(v) state.rapidFireClick=v end, info="자동 발사 간격을 더 짧게 줄여."},
+	{kind="toggle", label="무기 자동장착", val=state.autoEquipTool, fn=function(v) state.autoEquipTool=v end, info="손에 무기가 없으면 가방의 첫 도구를 자동으로 들어."},
+	{kind="action", label="FOV 크기 전환", bg=Color3.fromRGB(45,54,70), fn=function()
+		state.fovRadius = (state.fovRadius == 150) and 240 or 150
+	end, info="FOV 원 반경을 150과 240 사이에서 바꿔."},
+	{kind="action", label="스핀 속도 전환", bg=Color3.fromRGB(45,54,70), fn=function()
+		state.spinSpeed = (state.spinSpeed == 68) and 120 or 68
+	end, info="스핀핵 회전 속도를 68과 120 사이에서 전환해."},
+	{kind="action", label="단발 테스트 발사", bg=Color3.fromRGB(59,130,246), fn=triggerFireAction, info="현재 장착된 무기나 클릭 동작을 한 번 테스트 발사해."},
+})
+
+populateList(visPage, {
+	{kind="toggle", label="3인칭 핵", val=state.thirdPersonHack, fn=function(v)
+		state.thirdPersonHack = v
+		applyThirdPersonHack()
+	end, info="카메라 시점을 뒤로 넓혀 주변과 적 움직임을 3인칭으로 넓게 봐."},
+	{kind="action", label="3인칭 거리 전환", bg=Color3.fromRGB(45,54,70), fn=function()
+		state.thirdPersonDist = (state.thirdPersonDist == 11) and 16 or 11
+		if state.thirdPersonHack then applyThirdPersonHack() end
+	end, info="3인칭 핵 카메라 거리를 11과 16 사이에서 전환해."},
+	{kind="action", label="스킨 변경창", bg=Color3.fromRGB(59,130,246), fn=openSkinChangerSubUI, info="캐릭터 스킨 목록을 열고 선택 및 저장해."},
+	{kind="toggle", label="어두운 오버레이", val=state.darkOverlay, fn=function(v) state.darkOverlay=v end, info="화면 전체에 반투명 어두운 막을 씌워."},
+	{kind="toggle", label="중앙 점 조준선", val=state.crosshairDot, fn=function(v) state.crosshairDot=v end, info="화면 정중앙에 작은 점을 표시해."},
+	{kind="toggle", label="중앙 십자선", val=state.crosshairPlus, fn=function(v) state.crosshairPlus=v end, info="화면 정중앙에 십자(+) 조준선을 띄워."},
+	{kind="toggle", label="이동 반응 조준선", val=state.crosshairDynamic, fn=function(v) state.crosshairDynamic=v end, info="이동 속도에 따라 십자선 간격이 벌어지게 해."},
+	{kind="toggle", label="FPS 표시", val=state.fpsHud, fn=function(v) state.fpsHud=v end, info="상단 상태창에 현재 FPS를 표시해."},
+	{kind="toggle", label="핑 표시", val=state.pingHud, fn=function(v) state.pingHud=v end, info="상단 상태창에 네트워크 핑(ms)을 표시해."},
+	{kind="toggle", label="적 수 표시", val=state.enemyCountHud, fn=function(v) state.enemyCountHud=v end, info="상단 상태창에 생존 적 인원수를 표시해."},
+	{kind="toggle", label="스핀 상태 표시", val=state.spinStatusHud, fn=function(v) state.spinStatusHud=v end, info="상단 상태창에 스핀핵 ON/OFF 상태를 표시해."},
+	{kind="toggle", label="좌표 표시", val=state.posHud, fn=function(v) state.posHud=v end, info="상단 상태창에 내 캐릭터 X, Y, Z 좌표를 표시해."},
+	{kind="toggle", label="시야각 부스트", val=state.camFovBoost, fn=function(v) state.camFovBoost=v end, info="카메라 시야각(FOV)을 100으로 넓혀."},
+	{kind="toggle", label="3인칭 시야 확장", val=state.thirdPersonPeek, fn=function(v) state.thirdPersonPeek=v end, info="카메라 시야각을 추가로 8만큼 더 넓혀."},
+	{kind="toggle", label="안개 제거", val=state.noFog, fn=function(v) state.noFog=v; applyLightingState() end, info="맵 안개를 없애 멀리까지 선명하게 보이게 해."},
+	{kind="toggle", label="풀브라이트", val=state.fullBright, fn=function(v) state.fullBright=v; applyLightingState() end, info="어두운 맵에서도 주변 밝기를 최대로 밝혀."},
+	{kind="toggle", label="소프트 밝기", val=state.brightAmbientSoft, fn=function(v) state.brightAmbientSoft=v; applyLightingState() end, info="주변 조명을 부드럽고 밝게 올려."},
+	{kind="toggle", label="그림자 끄기", val=state.removeShadows, fn=function(v) state.removeShadows=v; applyLightingState() end, info="전역 그림자를 꺼서 시야를 깔끔하게 해."},
+	{kind="toggle", label="나이트비전", val=state.nightVisionTint, fn=function(v) state.nightVisionTint=v; applyLightingState() end, info="화면 색감을 초록빛 야간 시야로 바꿔."},
+	{kind="toggle", label="웜비전", val=state.warmVisionTint, fn=function(v) state.warmVisionTint=v; applyLightingState() end, info="화면 색감을 따뜻한 주황빛으로 바꿔."},
+	{kind="toggle", label="적 알림 플래시", val=state.screenFlashAlert, fn=function(v) state.screenFlashAlert=v end, info="생존한 적이 있을 때 화면 가장자리에 알림을 띄워."},
+})
+
+populateList(miscPage, {
+	{kind="toggle", label="무적 모드", val=state.godMode, fn=function(v)
+		state.godMode=v; applyGodModeStep(player.Character and player.Character:FindFirstChildOfClass("Humanoid"))
+	end, info="체력과 사망 상태를 유지해 생존성을 높여."},
+	{kind="toggle", label="이동속도 부스트", val=state.speedBoost, fn=function(v) state.speedBoost=v; syncMiscStats() end, info="캐릭터 이동 속도를 32로 높여."},
+	{kind="toggle", label="점프력 부스트", val=state.jumpBoost, fn=function(v) state.jumpBoost=v; syncMiscStats() end, info="캐릭터 점프력을 85로 높여."},
+	{kind="toggle", label="무한 점프", val=state.infJump, fn=function(v) state.infJump=v end, info="공중에서도 점프 입력으로 계속 뛰어올라."},
+	{kind="toggle", label="벽 통과", val=state.noClip, fn=function(v) state.noClip=v end, info="캐릭터 파츠 충돌을 꺼서 벽이나 장애물을 통과해."},
+	{kind="toggle", label="공중 부양", val=state.airFloat, fn=function(v) state.airFloat=v end, info="발 아래 발판을 따라 공중에 떠 있게 해."},
+	{kind="toggle", label="이동 중 자동점프", val=state.autoJumpMove, fn=function(v) state.autoJumpMove=v end, info="움직이는 동안 바닥에 닿을 때마다 자동으로 점프해."},
+	{kind="toggle", label="자동 달리기", val=state.autoSprintWalk, fn=function(v) state.autoSprintWalk=v; syncMiscStats() end, info="기본 이동 속도를 24로 유지해."},
+	{kind="toggle", label="안티 AFK", val=state.antiAfk, fn=function(v) state.antiAfk=v end, info="잠수 킥을 막기 위해 주기적으로 점프 입력을 보내."},
+	{kind="toggle", label="저중력", val=state.lowGravityToggle, fn=function(v) state.lowGravityToggle=v; applyLightingState() end, info="월드 중력을 75로 낮춰 체공 시간을 늘려."},
+	{kind="toggle", label="고중력", val=state.highGravityToggle, fn=function(v) state.highGravityToggle=v; applyLightingState() end, info="월드 중력을 320으로 높여 빠르게 낙하하게 해."},
+	{kind="toggle", label="안전 발판 고정", val=state.safePlatformLock, fn=function(v) state.safePlatformLock=v end, info="발 밑에 발판을 고정해 낙사를 막아."},
+	{kind="toggle", label="적 궤도 공전", val=state.orbitNearestEnemy, fn=function(v) state.orbitNearestEnemy=v end, info="가장 가까운 적 주변을 원을 그리며 돌아."},
+	{kind="toggle", label="적 상시 주시", val=state.autoFaceNearestEnemy, fn=function(v) state.autoFaceNearestEnemy=v end, info="가장 가까운 적 방향으로 내 캐릭터를 계속 돌려."},
+	{kind="action", label="가장 가까운 적 이동", bg=Color3.fromRGB(59,130,246), fn=function()
+		local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not myRoot then return end
+		local nearestDist, nearestRoot = math.huge, nil
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if isEnemyForEsp(plr) and plr.Character then
+				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+				if hrp and hum and hum.Health > 0 then
+					local d = (hrp.Position - myRoot.Position).Magnitude
+					if d < nearestDist then nearestDist = d; nearestRoot = hrp end
+				end
+			end
+		end
+		if nearestRoot then myRoot.CFrame = nearestRoot.CFrame * CFrame.new(0, 0, -4) end
+	end, info="가장 가까운 적 뒤쪽 근처로 한 번 이동해."},
+	{kind="action", label="전방 대시", bg=Color3.fromRGB(45,54,70), fn=function()
+		local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if myRoot and os.clock() - lastDashTick > 0.25 then
+			lastDashTick = os.clock()
+			myRoot.CFrame = myRoot.CFrame + myRoot.CFrame.LookVector * 10
+		end
+	end, info="바라보는 방향으로 10스터드 순간 이동해."},
+	{kind="action", label="상승 점프", bg=Color3.fromRGB(45,54,70), fn=function()
+		local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if myRoot then
+			myRoot.AssemblyLinearVelocity = Vector3.new(myRoot.AssemblyLinearVelocity.X, 75, myRoot.AssemblyLinearVelocity.Z)
+		end
+	end, info="위쪽으로 강한 수직 속도를 줘서 높이 뛰어올라."},
+	{kind="action", label="스폰 위치 복귀", bg=Color3.fromRGB(45,54,70), fn=function()
+		local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		local spawn = Workspace:FindFirstChildOfClass("SpawnLocation")
+		if myRoot and spawn then myRoot.CFrame = spawn.CFrame + Vector3.new(0, 4, 0) end
+	end, info="맵의 스폰 위치로 캐릭터를 되돌려."},
+	{kind="action", label="메뉴 중앙 정렬", bg=Color3.fromRGB(45,54,70), fn=function()
+		mainFrame.Position = UDim2.new(0.5, -178, 0.5, -116)
+	end, info="ZEROS 메뉴 창 위치를 화면 중앙으로 초기화해."},
+})
+
+toggleBtn.MouseButton1Click:Connect(function()
+	mainFrame.Visible = not mainFrame.Visible
+end)
